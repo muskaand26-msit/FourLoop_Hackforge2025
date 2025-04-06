@@ -1,0 +1,1097 @@
+import React, { useEffect, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import {
+  Award,
+  Calendar,
+  AlignCenterVertical as Certificate,
+  Clock,
+  Heart,
+  Medal,
+  Shield,
+  Star,
+  Trophy,
+  User,
+  CheckCircle,
+  AlertCircle,
+  Activity,
+  Droplet,
+  Gift,
+  Trophy as TrophyIcon,
+  MapPin,
+  FileText,
+  Download,
+  ArrowRight,
+  PlusCircle,
+  Edit,
+  XCircle,
+  Bell,
+  CalendarPlus
+} from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { format, addDays, isPast } from 'date-fns';
+import toast from 'react-hot-toast';
+import { DonationConfirmation } from '../components/DonationConfirmation';
+import { DonationCertificate } from '../components/DonationCertificate';
+import { NotificationBell } from '../components/NotificationBell';
+import { DonationConfirmationModal } from '../components/DonationConfirmationModal';
+import { EmergencyRequestConfirmation } from '../components/EmergencyRequestConfirmation';
+import { DonorOfferConfirmation } from '../components/DonorOfferConfirmation';
+import { DonorRequests } from '../components/DonorRequests';
+import EmergencyBanner from '../components/EmergencyBanner';
+import { ActionBanner } from '../components/ActionBanner';
+
+// Define the Notification interface here to match NotificationBell
+interface Notification {
+  id: string;
+  title?: string;
+  message?: string;
+  type?: string;
+  read?: boolean;
+  handled?: boolean;
+  data?: any;
+  created_at: string;
+}
+
+interface UserProfile {
+  id: string;
+  full_name: string;
+  blood_group: string;
+  date_of_birth: string;
+  contact_number: string;
+}
+
+interface DonorProfile {
+  id: string;
+  first_name: string;
+  last_name: string;
+  blood_type: string;
+  last_donation_date: string | null;
+  next_eligible_date: string | null;
+  is_available: boolean;
+  status: string;
+  points: number;
+  lifetime_donations: number;
+  current_tier: string;
+  achievements: Achievement[];
+  total_donations?: number;
+}
+
+interface BloodDonation {
+  id: string;
+  donation_date: string;
+  units_donated: number;
+  hospital_name: string;
+  hospital_address?: string;
+  blood_type: string;
+  verification_status: string;
+  donor_confirmed: boolean;
+  recipient_confirmed: boolean;
+  patient_name?: string;
+  points_earned: number;
+  donation_certificates?: {
+    certificate_number: string;
+    certificate_url: string;
+  }[];
+}
+
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  date_earned: string;
+  icon: string;
+}
+
+type RewardTier = 'bronze' | 'silver' | 'gold' | 'platinum';
+
+interface DonorRewards {
+  points: number;
+  lifetime_donations: number;
+  current_tier: RewardTier;
+  achievements: Achievement[];
+}
+
+interface PendingConfirmation {
+  requestId: string;
+  donorId: string;
+  requestedUnits: number;
+}
+
+const REWARD_TIERS: Record<RewardTier, { color: string; min: number }> = {
+  bronze: { color: 'text-amber-700', min: 0 },
+  silver: { color: 'text-gray-500', min: 50 },
+  gold: { color: 'text-yellow-500', min: 100 },
+  platinum: { color: 'text-purple-500', min: 200 },
+};
+
+// Add types for scheduled donations
+interface ScheduledDonation {
+  id: string | number;
+  composite_id: string;
+  donation_date: string;
+  slot_time: string;
+  notes?: string;
+  status: string;
+  facility_id: string | number;
+  facility_name: string;
+  facility_type: 'blood_bank' | 'hospital';
+}
+
+// Add types for scheduled donations section
+interface ScheduledDonationsProps {
+  scheduledDonations: ScheduledDonation[];
+  onReschedule: (donation: ScheduledDonation) => void;
+  onCancel: (donation: ScheduledDonation) => void;
+}
+
+// Add this component to display scheduled donations
+function ScheduledDonations({ scheduledDonations, onReschedule, onCancel }: ScheduledDonationsProps) {
+  return (
+    <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-gray-900">
+          Scheduled Blood Donations
+        </h2>
+        <button
+          onClick={() => window.location.href = '/schedule-donation'}
+          className="flex items-center text-sm bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-md"
+        >
+          <PlusCircle className="h-4 w-4 mr-1" />
+          Schedule New Donation
+        </button>
+      </div>
+      
+      {scheduledDonations.length > 0 ? (
+        <div className="space-y-4">
+          {scheduledDonations.map((donation) => (
+            <div
+              key={donation.id}
+              className="border border-gray-200 rounded-lg p-4"
+            >
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <p className="font-medium text-gray-900">
+                      {donation.facility_name}
+                    </p>
+                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                      donation.status === 'completed' 
+                        ? 'bg-green-100 text-green-800'
+                        : donation.status === 'cancelled' || donation.status === 'rejected'
+                          ? 'bg-red-100 text-red-800'
+                          : donation.status === 'confirmed'
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {donation.status.charAt(0).toUpperCase() + donation.status.slice(1)}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center mt-2">
+                    <Calendar className="h-4 w-4 text-gray-500 mr-1.5" />
+                    <p className="text-sm text-gray-600">
+                      <span className="font-medium">Date:</span> {format(new Date(donation.donation_date), 'EEE, MMM dd, yyyy')}
+                    </p>
+                  </div>
+                  
+                  <div className="flex items-center mt-1">
+                    <Clock className="h-4 w-4 text-gray-500 mr-1.5" />
+                    <p className="text-sm text-gray-600">
+                      <span className="font-medium">Time:</span> {donation.slot_time ? formatTimeDisplay(donation.slot_time) : 'Not specified'}
+                    </p>
+                  </div>
+                  
+                  {donation.notes && (
+                    <p className="text-sm text-gray-600 mt-2">
+                      <span className="font-medium">Notes:</span> {donation.notes}
+                    </p>
+                  )}
+                </div>
+                
+                {/* Actions */}
+                <div className="flex space-x-2">
+                  {donation.status === 'pending' || donation.status === 'confirmed' ? (
+                    <>
+                      <button
+                        onClick={() => onReschedule(donation)}
+                        className="flex items-center text-blue-600 hover:bg-blue-50 px-2 py-1 rounded text-sm"
+                        title="Reschedule"
+                      >
+                        <Edit className="h-4 w-4 mr-1" />
+                        Reschedule
+                      </button>
+                      <button
+                        onClick={() => onCancel(donation)}
+                        className="flex items-center text-red-600 hover:bg-red-50 px-2 py-1 rounded text-sm"
+                        title="Cancel"
+                      >
+                        <XCircle className="h-4 w-4 mr-1" />
+                        Cancel
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-center py-8 border border-gray-200 rounded-lg">
+          <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+          <p className="text-gray-600">You don't have any scheduled donations.</p>
+          <button
+            onClick={() => window.location.href = '/schedule-donation'}
+            className="mt-4 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md inline-flex items-center"
+          >
+            <PlusCircle className="h-4 w-4 mr-2" />
+            Schedule a Donation
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Add reschedule modal component
+interface RescheduleModalProps {
+  show: boolean;
+  donation: ScheduledDonation | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}
+
+function RescheduleModal({ show, donation, onClose, onConfirm }: RescheduleModalProps) {
+  if (!show || !donation) return null;
+  
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-bold text-gray-900 mb-4">Reschedule Donation</h3>
+        <p className="text-gray-600 mb-6">
+          You are about to reschedule your blood donation at {donation.facility_name} on {format(new Date(donation.donation_date), 'EEE, MMM dd, yyyy')} at {format(new Date(donation.donation_date), 'h:mm a')}.
+        </p>
+        <div className="flex justify-end space-x-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+          >
+            Continue to Reschedule
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Add cancellation confirmation modal component
+interface CancelModalProps {
+  show: boolean;
+  donation: ScheduledDonation | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}
+
+function CancelModal({ show, donation, onClose, onConfirm }: CancelModalProps) {
+  if (!show || !donation) return null;
+  
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-bold text-gray-900 mb-4">Cancel Donation</h3>
+        <p className="text-gray-600 mb-6">
+          Are you sure you want to cancel your blood donation at {donation.facility_name} on {format(new Date(donation.donation_date), 'EEE, MMM dd, yyyy')} at {format(new Date(donation.donation_date), 'h:mm a')}?
+        </p>
+        <div className="flex justify-end space-x-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+          >
+            Keep Appointment
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
+          >
+            Cancel Appointment
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Add this helper function above the Dashboard component
+function formatTimeDisplay(timeStr: string): string {
+  // Check if the time is already in 12-hour format
+  if (timeStr.includes('AM') || timeStr.includes('PM')) {
+    return timeStr;
+  }
+  
+  try {
+    // Convert HH:MM format to 12-hour time
+    const [hours, minutes] = timeStr.split(':').map(part => parseInt(part, 10));
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12; // Convert 0 to 12 for 12 AM
+    return `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
+  } catch (e) {
+    // If parsing fails, return the original string
+    return timeStr;
+  }
+}
+
+export function Dashboard() {
+  const navigate = useNavigate();
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [donorProfile, setDonorProfile] = useState<DonorProfile | null>(null);
+  const [donations, setDonations] = useState<BloodDonation[]>([]);
+  const [rewards, setRewards] = useState<DonorRewards | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [pendingConfirmation, setPendingConfirmation] =
+    useState<PendingConfirmation | null>(null);
+  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [selectedNotification, setSelectedNotification] =
+    useState<Notification | null>(null);
+  const [showDonationConfirmation, setShowDonationConfirmation] =
+    useState(false);
+  // Add state for scheduled donations
+  const [scheduledDonations, setScheduledDonations] = useState<ScheduledDonation[]>([]);
+  const [showRescheduleModal, setShowRescheduleModal] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [selectedDonation, setSelectedDonation] = useState<ScheduledDonation | null>(null);
+  const [scheduledDonationsLoading, setScheduledDonationsLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      try {
+        const {
+          data: { session },
+          error: authError,
+        } = await supabase.auth.getSession();
+
+        if (authError || !session) {
+          toast.error('Please sign in to view your dashboard');
+          navigate('/signin');
+          return;
+        }
+
+        // Check user type and redirect if needed
+        const userType = session.user.user_metadata?.user_type || 'user';
+        if (userType === 'blood_bank') {
+          navigate('/blood-bank-dashboard');
+          return;
+        } else if (userType === 'hospital') {
+          navigate('/hospital-dashboard');
+          return;
+        }
+
+        // Fetch user profile
+        const { data: userData, error: userError } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .single();
+
+        if (userError) {
+          console.error('Error fetching user profile:', userError);
+          toast.error('Failed to load user profile');
+          return;
+        }
+
+        setUserProfile(userData);
+
+        // Fetch donor profile data
+        const { data: donorData, error: donorError } = await supabase
+          .rpc('get_donor_profile_data', {
+            p_user_id: session.user.id
+          });
+
+        if (donorError) {
+          if (donorError.code !== 'PGRST116') {
+            console.error('Error fetching donor profile:', donorError);
+            toast.error('Failed to load donor profile');
+          } else {
+            console.log('User is not registered as a donor yet');
+          }
+        }
+
+        if (donorData && donorData.length > 0) {
+          // Set donor profile data
+          setDonorProfile(donorData[0]);
+          setRewards({
+            points: donorData[0].points || 0,
+            lifetime_donations: donorData[0].lifetime_donations || 0,
+            current_tier: donorData[0].current_tier || 'bronze',
+            achievements: donorData[0].achievements || []
+          });
+
+          // Fetch donations with certificates
+          const { data: donationsData, error: donationsError } = await supabase
+            .from('blood_donations')
+            .select(`
+              id,
+              donation_date,
+              units_donated,
+              hospital_name,
+              hospital_address,
+              blood_type,
+              verification_status,
+              donor_confirmed,
+              recipient_confirmed,
+              patient_name,
+              points_earned,
+              donation_certificates (
+                certificate_number,
+                certificate_url
+              )
+            `)
+            .eq('donor_id', donorData[0].donor_id)
+            .order('donation_date', { ascending: false });
+
+          if (donationsError) {
+            console.error('Error fetching donations:', donationsError);
+            toast.error('Failed to load donation history');
+          } else {
+            setDonations(donationsData || []);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching dashboard data:', error);
+        toast.error('Failed to load dashboard data');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDashboardData();
+  }, [navigate]);
+
+  // Moving the fetchScheduledDonations useEffect out as a separate top-level hook
+  useEffect(() => {
+    const fetchScheduledDonations = async () => {
+      setScheduledDonationsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!session?.user?.id) return;
+        
+        // First get the donor_id from the user_id
+        const { data: donorData, error: donorError } = await supabase
+          .from('donors')
+          .select('id')
+          .eq('user_id', session.user.id)
+          .single();
+          
+        if (donorError) {
+          console.error('Error fetching donor ID:', donorError);
+          return;
+        }
+        
+        if (!donorData?.id) {
+          console.log('No donor profile found for this user');
+          return;
+        }
+        
+        // Now fetch scheduled donations with the donor_id
+        const { data: scheduledData, error: scheduledError } = await supabase
+          .from('scheduled_donations')
+          .select(`
+            id,
+            blood_bank_id,
+            donor_id,
+            scheduled_date,
+            scheduled_time,
+            status,
+            notes,
+            blood_banks (
+              id,
+              name
+            )
+          `)
+          .eq('donor_id', donorData.id);
+
+        if (scheduledError) {
+          console.error('Error fetching scheduled donations:', scheduledError);
+          return;
+        }
+
+        // Fetch hospital donations with the donor_id - use donation_date instead of scheduled_date
+        // Also check if scheduled_time column exists, and handle fallback
+        try {
+          const { data: hospitalData, error: hospitalError } = await supabase
+            .from('hospital_donations')
+            .select(`
+              id,
+              donation_date,
+              scheduled_time,
+              slot_id,
+              status,
+              notes,
+              hospitals (
+                id,
+                name
+              )
+            `)
+            .eq('donor_id', donorData.id);
+
+          if (hospitalError) {
+            console.error('Error fetching hospital donations:', hospitalError);
+            // If error is about missing columns, try a fallback query
+            if (hospitalError.code === '42703') {
+              console.log('Attempting fallback query for hospital donations without scheduled_time');
+              const { data: fallbackData, error: fallbackError } = await supabase
+                .from('hospital_donations')
+                .select(`
+                  id,
+                  donation_date,
+                  slot_id,
+                  status,
+                  notes,
+                  hospitals (
+                    id,
+                    name
+                  )
+                `)
+                .eq('donor_id', donorData.id);
+              
+              if (fallbackError) {
+                console.error('Error in fallback hospital donations query:', fallbackError);
+                return;
+              }
+              
+              // Transform hospital donations data without scheduled_time
+              const transformedHospital = (fallbackData || []).map(donation => ({
+                id: donation.id,
+                composite_id: `hospital-${donation.id}`,
+                donation_date: donation.donation_date,
+                slot_time: '09:00', // Default time when not available
+                notes: donation.notes,
+                status: donation.status || 'pending',
+                facility_id: donation.hospitals?.id,
+                facility_name: donation.hospitals?.name,
+                facility_type: 'hospital' as const
+              }));
+
+              // Combine with scheduled donations
+              const transformedScheduled = (scheduledData || []).map(donation => ({
+                id: donation.id,
+                composite_id: `blood_bank-${donation.id}`,
+                donation_date: donation.scheduled_date,
+                slot_time: donation.scheduled_time || '09:00',
+                notes: donation.notes,
+                status: donation.status || 'pending',
+                facility_id: donation.blood_bank_id,
+                facility_name: donation.blood_banks?.name,
+                facility_type: 'blood_bank' as const
+              }));
+
+              // Combine both types of donations
+              const combined = [...transformedScheduled, ...transformedHospital];
+              
+              // Sort donations by date (newest first)
+              const sorted = combined.sort((a, b) => 
+                new Date(b.donation_date).getTime() - new Date(a.donation_date).getTime()
+              );
+              
+              setScheduledDonations(sorted);
+              return;
+            }
+          }
+
+          // Transform scheduled donations data - use scheduled_time directly
+          const transformedScheduled = (scheduledData || []).map(donation => ({
+            id: donation.id,
+            composite_id: `blood_bank-${donation.id}`,
+            donation_date: donation.scheduled_date,
+            slot_time: donation.scheduled_time || '09:00',
+            notes: donation.notes,
+            status: donation.status || 'pending',
+            facility_id: donation.blood_bank_id,
+            facility_name: donation.blood_banks?.name,
+            facility_type: 'blood_bank' as const
+          }));
+
+          // Transform hospital donations data
+          const transformedHospital = (hospitalData || []).map(donation => ({
+            id: donation.id,
+            composite_id: `hospital-${donation.id}`,
+            donation_date: donation.donation_date,
+            slot_time: donation.scheduled_time || '09:00',
+            notes: donation.notes,
+            status: donation.status || 'pending',
+            facility_id: donation.hospitals?.id,
+            facility_name: donation.hospitals?.name,
+            facility_type: 'hospital' as const
+          }));
+
+          // Combine both types of donations
+          const combined = [...transformedScheduled, ...transformedHospital];
+          
+          // Sort donations by date (newest first)
+          const sorted = combined.sort((a, b) => 
+            new Date(b.donation_date).getTime() - new Date(a.donation_date).getTime()
+          );
+          
+          setScheduledDonations(sorted);
+        } catch (error) {
+          console.error('Error processing hospital donations:', error);
+        }
+      } catch (error) {
+        console.error('Error in donation fetch:', error);
+      } finally {
+        setScheduledDonationsLoading(false);
+      }
+    };
+
+    fetchScheduledDonations();
+  }, []);
+
+  const getNextDonationDate = () => {
+    if (!donorProfile?.next_eligible_date) {
+      if (donorProfile?.last_donation_date) {
+        // Calculate from last donation date if next_eligible_date is not set
+        return addDays(new Date(donorProfile.last_donation_date), 90);
+      }
+      return null;
+    }
+    return new Date(donorProfile.next_eligible_date);
+  };
+
+  const handleConfirmationComplete = () => {
+    setShowConfirmation(false);
+    setPendingConfirmation(null);
+    window.location.reload();
+  };
+
+  // Handle donation reschedule
+  const handleReschedule = (donation: ScheduledDonation) => {
+    // Navigate to schedule page with pre-filled data
+    window.location.href = `/schedule-donation?facilityId=${donation.facility_id}&facilityType=${donation.facility_type}&date=${new Date(donation.donation_date).toISOString().split('T')[0]}&rescheduleId=${donation.id}`;
+  };
+
+  // Handle donation cancellation
+  const handleCancel = (donation: ScheduledDonation) => {
+    setSelectedDonation(donation);
+    setShowCancelModal(true);
+  };
+
+  // Confirm reschedule and navigate to scheduling page
+  const confirmReschedule = () => {
+    // Navigate to scheduling page
+    navigate('/schedule-donation');
+    setShowRescheduleModal(false);
+  };
+
+  // Confirm cancellation and update database
+  const confirmCancellation = async () => {
+    if (!selectedDonation) return;
+    
+    try {
+      // Update donation status to cancelled
+      let error;
+      
+      if (selectedDonation.facility_type === 'blood_bank') {
+        const { error: updateError } = await supabase
+          .from('scheduled_donations')
+          .update({ status: 'cancelled' })
+          .eq('id', selectedDonation.id);
+        error = updateError;
+      } else {
+        const { error: updateError } = await supabase
+          .from('hospital_donations')
+          .update({ status: 'cancelled' })
+          .eq('id', selectedDonation.id);
+        error = updateError;
+      }
+      
+      if (error) {
+        throw error;
+      }
+      
+      // Update local state
+      setScheduledDonations(prev => 
+        prev.map(donation => 
+          donation.id === selectedDonation.id 
+            ? { ...donation, status: 'cancelled' } 
+            : donation
+        )
+      );
+      
+      toast.success('Donation cancelled successfully');
+    } catch (error) {
+      console.error('Error cancelling donation:', error);
+      toast.error('Failed to cancel donation');
+    } finally {
+      setSelectedDonation(null);
+      setShowCancelModal(false);
+    }
+  };
+
+  const nextDonationDate = getNextDonationDate();
+  const canDonate = !nextDonationDate || isPast(nextDonationDate);
+
+  const handleNotificationClick = (notification: Notification) => {
+    // Only handle blood_offer notifications
+    if (notification.type === 'blood_offer' && notification.data) {
+      setSelectedNotification(notification);
+      setShowDonationConfirmation(true);
+    } else {
+      // Use error instead of warning since warning doesn't exist
+      toast.error("This notification doesn't require confirmation");
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 pt-24 pb-16 flex items-center justify-center">
+        <div className="text-center">
+          <User className="h-12 w-12 text-red-500 animate-pulse mx-auto mb-4" />
+          <p className="text-gray-600">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-6xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+        {/* Page Header - Donor Profile Card */}
+        <div className="bg-white rounded-lg shadow-md p-6 mb-8 mt-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">
+                Welcome, {donorProfile?.first_name || (userProfile && userProfile.full_name ? userProfile.full_name : 'Donor')}
+              </h1>
+              <div className="mt-2 space-y-1">
+                <p className="text-gray-600">
+                  Blood Group: {donorProfile?.blood_type || userProfile?.blood_group || 'Not specified'}
+                </p>
+                <p className="text-gray-600">
+                  Contact: {userProfile?.contact_number || 'Not specified'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-4">
+              {donorProfile?.is_available && (
+                <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium">
+                  Available
+                </span>
+              )}
+              <NotificationBell onNotificationClick={handleNotificationClick} />
+            </div>
+          </div>
+        </div>
+
+        {/* Original Page Header */}
+        <div className="px-4 sm:px-0">
+          <div className="mb-6">
+            <p className="text-gray-600">
+              Manage your donor profile, track donations, and find nearby blood requests.
+            </p>
+          </div>
+
+          {donorProfile && nextDonationDate && !canDonate && (
+            <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="flex items-center text-red-700">
+                <Clock className="h-5 w-5 mr-2" />
+                <span>
+                  Next eligible donation date:{' '}
+                  <span className="font-semibold">
+                    {format(nextDonationDate, 'PPP')}
+                  </span>
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Donor Information Section */}
+        {donorProfile && (
+          <>
+            {/* Donation History */}
+            <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-gray-900">
+                  Donation History
+                </h2>
+                <div className="flex items-center space-x-4">
+                  <span className="text-sm bg-gray-100 px-2 py-1 rounded-full text-gray-600">
+                    {rewards?.lifetime_donations || 0} donations
+                  </span>
+                  <span className="text-sm bg-blue-100 px-2 py-1 rounded-full text-blue-600">
+                    {donorProfile.total_donations || 0} units donated
+                  </span>
+                </div>
+              </div>
+              {donations.length > 0 ? (
+                <div className="space-y-4">
+                  {donations.map((donation) => (
+                    <div
+                      key={donation.id}
+                      className="border border-gray-200 rounded-lg p-4"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <p className="font-medium text-gray-900">
+                              {donation.hospital_name}
+                            </p>
+                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                              donation.donor_confirmed && donation.recipient_confirmed
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {donation.donor_confirmed && donation.recipient_confirmed
+                                ? 'Verified'
+                                : 'Pending Verification'}
+                            </span>
+                          </div>
+                          
+                          <p className="text-sm text-gray-600 mt-1">
+                            <span className="font-medium">Date:</span> {format(new Date(donation.donation_date), 'MMM dd, yyyy')}
+                          </p>
+                          
+                          {donation.patient_name && (
+                            <p className="text-sm text-gray-600">
+                              <span className="font-medium">Patient:</span> {donation.patient_name}
+                            </p>
+                          )}
+                          
+                          <p className="text-sm text-gray-600">
+                            <span className="font-medium">Units Donated:</span> {donation.units_donated}
+                          </p>
+                          
+                          <p className="text-sm text-gray-600">
+                            <span className="font-medium">Blood Type:</span> {donation.blood_type}
+                          </p>
+                          
+                          <p className="text-sm text-gray-600">
+                            <span className="font-medium">Points Earned:</span> {donation.points_earned}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end space-y-2">
+                          {donation.donation_certificates && donation.donation_certificates.length > 0 && (
+                            <a
+                              href={donation.donation_certificates[0].certificate_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center text-red-500 hover:text-red-600 bg-red-50 px-3 py-1 rounded-full text-sm"
+                            >
+                              <Certificate className="h-4 w-4 mr-1" />
+                              View Certificate
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-gray-600">No donations recorded yet.</p>
+              )}
+            </div>
+
+            {/* Donor Status Section */}
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Donor Status</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="flex items-center space-x-3">
+                  <div className={`p-2 rounded-full ${donorProfile.is_available ? 'bg-green-100' : 'bg-red-100'}`}>
+                    <Activity className={`h-5 w-5 ${donorProfile.is_available ? 'text-green-600' : 'text-red-600'}`} />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Status</p>
+                    <p className="font-medium text-gray-900">
+                      {donorProfile.is_available ? 'Available' : 'Not Available'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-blue-100">
+                    <Calendar className="h-5 w-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Next Eligible Date</p>
+                    <p className="font-medium text-gray-900">
+                      {donorProfile.next_eligible_date 
+                        ? format(new Date(donorProfile.next_eligible_date), 'MMM dd, yyyy')
+                        : 'Available Now'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-purple-100">
+                    <Clock className="h-5 w-5 text-purple-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Last Donation</p>
+                    <p className="font-medium text-gray-900">
+                      {donorProfile.last_donation_date 
+                        ? format(new Date(donorProfile.last_donation_date), 'MMM dd, yyyy')
+                        : 'Never'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-yellow-100">
+                    <Droplet className="h-5 w-5 text-yellow-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Lifetime Donations</p>
+                    <p className="font-medium text-gray-900">
+                      {rewards?.lifetime_donations || 0} donations
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-blue-100">
+                    <Activity className="h-5 w-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Total Units Donated</p>
+                    <p className="font-medium text-gray-900">
+                      {donorProfile.total_donations || 0} units
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Donor Rewards Section */}
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Donor Rewards</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-red-100">
+                    <Star className="h-5 w-5 text-red-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Current Tier</p>
+                    <p className="font-medium text-gray-900 capitalize">
+                      {donorProfile.current_tier || 'Bronze'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-green-100">
+                    <Gift className="h-5 w-5 text-green-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Points</p>
+                    <p className="font-medium text-gray-900">
+                      {donorProfile.points || 0}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 rounded-full bg-blue-100">
+                    <Trophy className="h-5 w-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Achievements</p>
+                    <p className="font-medium text-gray-900">
+                      {(donorProfile.achievements || []).length}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Achievements Grid */}
+              <div className="mt-6">
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Your Achievements</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {(donorProfile.achievements || []).map((achievement: any) => (
+                    <div key={achievement.id} className="bg-gray-50 rounded-lg p-4">
+                      <div className="flex items-center space-x-3">
+                        <div className="p-2 rounded-full bg-yellow-100">
+                          {achievement.icon === 'award' && <Award className="h-5 w-5 text-yellow-600" />}
+                          {achievement.icon === 'shield' && <Shield className="h-5 w-5 text-yellow-600" />}
+                          {achievement.icon === 'trophy' && <Trophy className="h-5 w-5 text-yellow-600" />}
+                          {achievement.icon === 'star' && <Star className="h-5 w-5 text-yellow-600" />}
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-900">{achievement.title}</p>
+                          <p className="text-sm text-gray-500">{achievement.description}</p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Earned on {format(new Date(achievement.date_earned), 'MMM dd, yyyy')}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            
+            {/* Scheduled Donations Section - Moved to bottom */}
+            <ScheduledDonations 
+              scheduledDonations={scheduledDonations}
+              onReschedule={handleReschedule}
+              onCancel={handleCancel}
+            />
+          </>
+        )}
+
+        {showConfirmation && pendingConfirmation && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full mx-4">
+              <DonationConfirmation
+                requestId={pendingConfirmation.requestId}
+                donorId={pendingConfirmation.donorId}
+                requestedUnits={pendingConfirmation.requestedUnits}
+                onConfirmed={handleConfirmationComplete}
+                onClose={() => setShowConfirmation(false)}
+                onScheduleAnother={() => navigate('/schedule-donation')}
+              />
+            </div>
+          </div>
+        )}
+
+        {showDonationConfirmation && selectedNotification && (
+          <DonationConfirmationModal
+            isOpen={showDonationConfirmation}
+            onClose={() => {
+              setShowDonationConfirmation(false);
+              setSelectedNotification(null);
+            }}
+            notificationData={{
+              id: selectedNotification.id,
+              request_id: selectedNotification.data?.request_id || '',
+              donor_id: selectedNotification.data?.donor_id || '',
+              donor_name: selectedNotification.data?.name || 'Unknown Donor',
+              blood_type: selectedNotification.data?.blood_type || 'Unknown',
+              patient_name: selectedNotification.data?.patient_name || 'Anonymous Patient'
+            }}
+          />
+        )}
+        
+        {/* Reschedule Modal */}
+        <RescheduleModal
+          show={showRescheduleModal}
+          donation={selectedDonation}
+          onClose={() => setShowRescheduleModal(false)}
+          onConfirm={confirmReschedule}
+        />
+        
+        {/* Cancel Modal */}
+        <CancelModal
+          show={showCancelModal}
+          donation={selectedDonation}
+          onClose={() => setShowCancelModal(false)}
+          onConfirm={confirmCancellation}
+        />
+      </div>
+    </div>
+  );
+}
